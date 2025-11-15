@@ -1,0 +1,71 @@
+name: Universal-Windows-RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  all-win-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 3600
+
+    steps:
+
+      - name: Configure Windows & Enable RDP
+        run: |
+          # Rename PC
+          Rename-Computer -NewName "adnwebs" -Force
+
+          # Enable RDP & Disable NLA for compatibility
+          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" -Name "SecurityLayer" -Value 0 -Force
+
+          # Firewall
+          netsh advfirewall firewall delete rule name="RDP-Access"
+          netsh advfirewall firewall add rule name="RDP-Access" dir=in action=allow protocol=TCP localport=3389
+
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP Admin User (Works in all Windows)
+        run: |
+          $passwordLength = 16
+          Add-Type -AssemblyName System.Web
+          $password = [System.Web.Security.Membership]::GeneratePassword($passwordLength, 4)
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          net user RDP $password /add
+          net localgroup administrators RDP /add
+          net localgroup "Remote Desktop Users" RDP /add
+
+          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+
+      - name: Install Tailscale (Universal Windows Method)
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $file = "$env:TEMP\ts.msi"
+          powershell -command "Invoke-WebRequest -Uri $url -OutFile $file"
+          Start-Process msiexec.exe -ArgumentList "/i "$file" /quiet /norestart" -Wait
+          Remove-Item $file -Force
+
+      - name: Start Tailscale & Get IP
+        run: |
+          $hostName = "adnwebs-$env:RUNNER_TRACKING_ID"
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostName
+
+          Start-Sleep -Seconds 5
+          $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+          echo "TS_IP=$ip" >> $env:GITHUB_ENV
+          echo "TS_HOST=$hostName" >> $env:GITHUB_ENV
+
+      - name: Show Access & Keep Alive
+        run: |
+          Write-Host "n========= RDP ACCESS ========="
+          Write-Host "IP: $env:TS_IP"
+          Write-Host "User: RDP"
+          Write-Host "Pass: $env:RDP_PASSWORD"
+          Write-Host "==============================n"
+          
+          while ($true) {
+            Write-Host "[$(Get-Date)] PC Online"
+            Start-Sleep 300
+          }
